@@ -1,0 +1,9 @@
+Flask
+Flask-WTF
+WTForms
+requests
+python-dotenv
+sounddevice
+numpy
+soundfile
+openai
