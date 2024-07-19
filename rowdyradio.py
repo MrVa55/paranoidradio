@@ -7,6 +7,9 @@ from flask_wtf import FlaskForm
 from wtforms import StringField, RadioField, SubmitField
 from wtforms.validators import DataRequired
 from dotenv import load_dotenv
+from threading import Thread, Lock
+import signal
+import sys
 
 # Load environment variables from .env file
 load_dotenv()
@@ -24,6 +27,9 @@ headers = {
 app = Flask(__name__)
 app.config['SECRET_KEY'] = 'your_secret_key'  # Replace with your secret key
 app.config['DEBUG'] = True
+
+song_queue = []
+queue_lock = Lock()
 
 # Form class for the web interface
 class SongForm(FlaskForm):
@@ -99,6 +105,31 @@ def stream_audio(audio_url):
     except Exception as e:
         app.logger.error(f"Failed to stream audio: {e}")
 
+# Background task to poll song status
+def poll_song_status():
+    while True:
+        with queue_lock:
+            for song_id in song_queue[:]:
+                result = check_result(song_id)
+                if result and 'data' in result:
+                    if result['data']['status'] == 'streaming':
+                        audio_url = f"https://audiopipe.suno.ai/?item_id={song_id}"
+                        app.logger.info(f'Song is streaming. Audio URL: {audio_url}')
+                        stream_audio(audio_url)
+                        with queue_lock:
+                            song_queue.remove(song_id)
+                    elif result['data']['status'] == 'complete':
+                        audio_url = result['data']['audio_url']
+                        app.logger.info(f'Song generation complete. Audio URL: {audio_url}')
+                        stream_audio(audio_url)
+                        with queue_lock:
+                            song_queue.remove(song_id)
+                    elif result['data']['status'] == 'error':
+                        app.logger.error(f'Error during song generation: {result["data"]["meta_error_msg"]}')
+                        with queue_lock:
+                            song_queue.remove(song_id)
+        time.sleep(5)
+
 # API endpoint to generate music
 @app.route('/generate', methods=['POST'])
 def generate():
@@ -116,8 +147,8 @@ def generate():
     if response and 'code' in response and response['code'] == 0:
         song_id = response['data'][0]['song_id']
         app.logger.info(f'Song generation submitted. Song ID: {song_id}')
-        
-        # Provide feedback to the user
+        with queue_lock:
+            song_queue.append(song_id)
         return jsonify({'message': 'Song generation started', 'song_id': song_id}), 202
     else:
         error_message = response.get('msg', 'Unknown error') if response else 'Failed to get a valid response from Suno AI API'
@@ -142,36 +173,8 @@ def index():
             song_id = response['data'][0]['song_id']
             app.logger.info(f'Song generation submitted. Song ID: {song_id}')
             flash('Song generation started. It will begin playing soon...', 'info')
-
-            # Poll for the result every few seconds
-            while True:
-                result = check_result(song_id)
-                if result and 'data' in result:
-                    if result['data']['status'] == 'streaming':
-                        audio_url = f"https://audiopipe.suno.ai/?item_id={song_id}"
-                        app.logger.info(f'Song is streaming. Audio URL: {audio_url}')
-                        
-                        # Start streaming the audio
-                        stream_audio(audio_url)
-                        flash('Song is now playing!', 'success')
-                        return redirect(url_for('index'))
-                    elif result['data']['status'] == 'complete':
-                        audio_url = result['data']['audio_url']
-                        app.logger.info(f'Song generation complete. Audio URL: {audio_url}')
-                        
-                        # Stream the complete audio file
-                        stream_audio(audio_url)
-                        flash('Song generated and played successfully!', 'success')
-                        return redirect(url_for('index'))
-                    elif result['data']['status'] == 'error':
-                        flash('Error during song generation.', 'danger')
-                        return redirect(url_for('index'))
-                    else:
-                        app.logger.info('Song generation in progress. Checking again in a few seconds...')
-                        time.sleep(5)
-                else:
-                    flash('Failed to get a valid response from Suno AI API.', 'danger')
-                    return redirect(url_for('index'))
+            with queue_lock:
+                song_queue.append(song_id)
         else:
             error_message = response.get('msg', 'Unknown error') if response else 'Failed to get a valid response from Suno AI API'
             app.logger.error(f"Error generating song: {error_message}")
@@ -180,5 +183,23 @@ def index():
     
     return render_template('index.html', form=form)
 
+# Cleanup function to release resources
+def cleanup():
+    app.logger.info("Cleaning up before exit...")
+    sys.exit(0)
+
+# Signal handler for graceful shutdown
+def signal_handler(sig, frame):
+    cleanup()
+
 if __name__ == '__main__':
+    # Register signal handlers for graceful shutdown
+    signal.signal(signal.SIGINT, signal_handler)
+    signal.signal(signal.SIGTERM, signal_handler)
+
+    # Start the background thread
+    poll_thread = Thread(target=poll_song_status)
+    poll_thread.start()
+
+    # Run the Flask app
     app.run(host='0.0.0.0', port=5001)
