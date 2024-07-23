@@ -10,7 +10,7 @@ def summarize_text(transcribed_text):
     response = client.chat.completions.create(
         model="gpt-4",
         messages=[
-            {"role": "system", "content": "You are part of a radio that listens to conversations and writes songs about it. You will get a transcript of the conversation and will need to make a prompt for a songwriting AI. This prompt should be 150 charachters. You will want to ask for titles that are built on central sentences quoted verbatim, so you cannot miss that the conversation is being repeated even if you dont know. The style should be jazz"},
+            {"role": "system", "content": "You are part of a radio that listens to conversations and writes songs about it at the Borderland. The point is that the speakers should be surprised that the content of their conversation is in the lyrics. You will get a transcript of the conversation and need to summarize what is about as accurately as possible as a prompt for a songwriting AI. The prompt you return should be less than 200 charachters. Try to match closely the content of the conversation into the prompt, while including the context that it is happening at The Borderland. "},
             {"role": "user", "content": f"Here is the latest conversation: {transcribed_text}"}
         ]
     )
